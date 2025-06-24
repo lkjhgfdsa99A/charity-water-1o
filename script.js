@@ -41,6 +41,9 @@ function resetGame() {
     seenWaterTypes = new Set(['clean']);
     playerHasWon = false; // Reset win state
     gamePaused = false; // Reset pause state
+    hasHadWaterAboveThreshold = false; // Reset threshold tracking
+    hasClickedQuizBefore = false; // Reset quiz click tracking
+    hasSeenTimeManagementRule = false; // Reset time management rule tracking
     
     // Reset milestone notifications
     milestoneNotifications = {
@@ -69,6 +72,14 @@ function resetGame() {
         followingDrop.remove();
         followingDrop = null;
     }
+    
+    // Clear all temporary drops
+    temporaryDrops.forEach(tempDrop => {
+        if (tempDrop.element && tempDrop.element.parentNode) {
+            tempDrop.element.remove();
+        }
+    });
+    temporaryDrops = [];
     
     // Reset cursor
     document.body.style.cursor = 'default';
@@ -127,6 +138,21 @@ function drainReservoir() {
         }
     } else {
         console.log('🌊 DEV: Game not active');
+    }
+}
+
+// Secret function to set water level below 6 for testing quiz alert
+function setLowWater() {
+    if (gameActive) {
+        // Set water to 5 drops (below 30% threshold)
+        waterLevel = 5;
+        dropsCollected = 5;
+        // Mark that player has had water above threshold to trigger low water alert
+        hasHadWaterAboveThreshold = true;
+        updateWaterLevel();
+        console.log('⚠️ DEV: Water level set to 5 drops for low water alert testing');
+    } else {
+        console.log('⚠️ DEV: Game not active');
     }
 }
 
@@ -399,6 +425,20 @@ document.addEventListener('keydown', function(e) {
             showRuleNotification(toxicRule);
         }
     }
+    
+    // Secret low water button toggle (Ctrl+Shift+L)
+    if (e.ctrlKey && e.shiftKey && e.key === 'L') {
+        const secretLowWaterButton = document.getElementById('secretLowWaterButton');
+        if (secretLowWaterButton.style.opacity === '0' || secretLowWaterButton.style.opacity === '') {
+            secretLowWaterButton.style.opacity = '1';
+            secretLowWaterButton.style.pointerEvents = 'auto';
+            console.log('⚠️ DEV: Secret low water button shown!');
+        } else {
+            secretLowWaterButton.style.opacity = '0';
+            secretLowWaterButton.style.pointerEvents = 'none';
+            console.log('⚠️ DEV: Secret low water button hidden!');
+        }
+    }
 });
 
 // Game variables
@@ -410,10 +450,13 @@ let followingDrop = null;
 let currentProcessingTool = null;
 let processingTimer = null;
 let waterLevel = 0; // Current water level (0-20)
-let currentWeather = 'Clear';
+let currentWeather = 'Clear'; // Current weather condition
 let weatherTimer = null;
 let evaporationTimer = null;
 let gamePaused = false; // Add game pause state
+let hasHadWaterAboveThreshold = false; // Track if player has ever had water above 30%
+let hasClickedQuizBefore = false; // Track if player has clicked quiz before
+let hasSeenTimeManagementRule = false; // Track if time management rule has been shown
 
 // Timer system - REMOVED - Timer functionality removed
 
@@ -423,6 +466,16 @@ let currentRuleLevel = 1;
 let dropsCollected = 0;
 let availableWaterTypes = ['clean']; // Start with only clean water
 let seenWaterTypes = new Set(['clean']); // Track which water types have been seen
+
+// Catchment zone cooldown system
+let slotCooldowns = [0, 0, 0, 0]; // Cooldown timers for each slot
+let slotTimers = [null, null, null, null]; // Timer references for each slot
+let gameHasStartedGenerating = false; // Track if game has started generating diverse water types
+
+// Weather dice system - mandatory rolling every 3 drops
+let dropsCollectedSinceLastRoll = 0;
+let weatherRollRequired = false;
+let firstDiceRoll = true;
 
 // Track drops in tools - persists even when dialogs are closed
 let toolDrops = {
@@ -443,8 +496,51 @@ const WATER_TYPES = {
     'suspicious-clean-toxic-water': { name: 'Suspicious Water', canGoTo: ['microscope'], color: '#4A90E2', actualType: 'toxic-water' }
 };
 
+// Calculated water type progression with MORE VARIETY early on
+const WATER_TYPE_PHASES = {
+    phase1: { // Drops 1-6: More variety with increased polluted water
+        drops: [1, 6],
+        probabilities: {
+            clean: 50,              // Reduced from 70 to introduce more variety
+            polluted: 45,           // Increased from 25 to give more polluted water early
+            contaminated: 5         // Keep some contaminated water
+        }
+    },
+    phase2: { // Drops 7-12: Intense challenge with good variety
+        drops: [7, 12],
+        probabilities: {
+            clean: 25,              // Reduced from 35 for more challenge
+            polluted: 35,           // Increased from 30 for consistent polluted water
+            contaminated: 25,       // Increased from 20 for more variety
+            'suspicious-clean-polluted': 10,    // Same as before
+            'suspicious-clean-contaminated': 5  // Same as before
+        }
+    },
+    phase3: { // Drops 13-20: Maximum challenge but still balanced
+        drops: [13, 20],
+        probabilities: {
+            clean: 10,              // Reduced from 15 for extreme challenge
+            polluted: 25,           // Same as before
+            contaminated: 30,       // Same as before
+            'suspicious-clean-polluted': 15,    // Same as before
+            'suspicious-clean-contaminated': 15, // Increased from 10 for more suspicious water
+            'toxic-water': 5        // Same as before
+        }
+    }
+};
+
+// Catchment zone cooldown rates by phase (AGGRESSIVE SCARCITY)
+const CATCHMENT_COOLDOWNS = {
+    phase1: { min: 5000, max: 10000 },   // 5-10 seconds (was 3-6)
+    phase2: { min: 8000, max: 15000 },   // 8-15 seconds (was 4-8)
+    phase3: { min: 12000, max: 20000 }   // 12-20 seconds (was 6-12)
+};
+
 // Add a global variable to track if the player has won
 let playerHasWon = false;
+
+// Track temporary drops placed on game area
+let temporaryDrops = [];
 
 // Milestone tracking
 let milestoneNotifications = {
@@ -455,24 +551,39 @@ let milestoneNotifications = {
 
 // Sound system
 let winSound = null;
+let lossSound = null;
+let milestoneSound = null;
 let soundEnabled = true;
 
 // Initialize sound system
 function initializeSounds() {
     try {
-        // Initialize win sound - you'll need to provide the audio file
-        winSound = new Audio('assets/sounds/win-sound.mp3');
-        winSound.volume = 0.7; // Set volume to 70%
+        // Initialize win sound
+        winSound = new Audio('assets/sounds/8-bit-video-game-win-level-sound-version-1-145827.mp3');
+        winSound.volume = 0.7;
         winSound.preload = 'auto';
         
-        // Handle sound loading errors gracefully
-        winSound.addEventListener('error', (e) => {
-            console.log('Win sound failed to load:', e);
-            soundEnabled = false;
-        });
+        // Initialize loss sound
+        lossSound = new Audio('assets/sounds/8-bit-video-game-fail-version-2-145478.mp3');
+        lossSound.volume = 0.7;
+        lossSound.preload = 'auto';
         
-        winSound.addEventListener('canplaythrough', () => {
-            console.log('Win sound loaded successfully');
+        // Initialize milestone sound
+        milestoneSound = new Audio('assets/sounds/game-bonus-02-294436.mp3');
+        milestoneSound.volume = 0.6; // Slightly quieter for milestones
+        milestoneSound.preload = 'auto';
+        
+        // Handle sound loading errors gracefully
+        [winSound, lossSound, milestoneSound].forEach((sound, index) => {
+            const soundNames = ['Win', 'Loss', 'Milestone'];
+            
+            sound.addEventListener('error', (e) => {
+                console.log(`${soundNames[index]} sound failed to load:`, e);
+            });
+            
+            sound.addEventListener('canplaythrough', () => {
+                console.log(`${soundNames[index]} sound loaded successfully`);
+            });
         });
         
     } catch (error) {
@@ -483,20 +594,35 @@ function initializeSounds() {
 
 // Play win sound
 function playWinSound() {
-    if (soundEnabled && winSound) {
+    playSound(winSound, 'Win');
+}
+
+// Play loss sound
+function playLossSound() {
+    playSound(lossSound, 'Loss');
+}
+
+// Play milestone sound
+function playMilestoneSound() {
+    playSound(milestoneSound, 'Milestone');
+}
+
+// Generic sound play function
+function playSound(sound, soundName) {
+    if (soundEnabled && sound) {
         try {
-            winSound.currentTime = 0; // Reset to beginning
-            const playPromise = winSound.play();
+            sound.currentTime = 0; // Reset to beginning
+            const playPromise = sound.play();
             
             if (playPromise !== undefined) {
                 playPromise.then(() => {
-                    console.log('Win sound played successfully');
+                    console.log(`${soundName} sound played successfully`);
                 }).catch((error) => {
-                    console.log('Win sound play failed:', error);
+                    console.log(`${soundName} sound play failed:`, error);
                 });
             }
         } catch (error) {
-            console.log('Error playing win sound:', error);
+            console.log(`Error playing ${soundName} sound:`, error);
         }
     }
 }
@@ -511,6 +637,22 @@ function initializeGame() {
     availableWaterTypes = ['clean'];
     seenWaterTypes = new Set(['clean']);
     
+    // Reset temporary drops
+    temporaryDrops = [];
+    
+    // Reset catchment zone cooldowns
+    slotCooldowns = [0, 0, 0, 0];
+    slotTimers.forEach(timer => {
+        if (timer) clearInterval(timer);
+    });
+    slotTimers = [null, null, null, null];
+    gameHasStartedGenerating = false;
+    
+    // Reset weather dice system
+    dropsCollectedSinceLastRoll = 0;
+    weatherRollRequired = false;
+    firstDiceRoll = true;
+    
     // Initialize sound system
     initializeSounds();
     
@@ -518,6 +660,9 @@ function initializeGame() {
     
     // Initialize weather system
     initializeWeatherSystem();
+    
+    // Initialize dice button state
+    updateDiceButtonState();
     
     // Initialize rules panel
     initializeRulesPanel();
@@ -538,6 +683,9 @@ function initializeGame() {
     // Initialize water level display
     updateWaterLevel();
     
+    // Initialize emergency quiz status
+    updateEmergencyQuizStatus();
+    
     // Add click handlers to tools for opening empty dialogs
     addToolClickHandlers();
 }
@@ -556,23 +704,55 @@ function generateWaterDrops() {
     }
 }
 
+// Get current game phase based on drops collected
+function getCurrentPhase() {
+    if (dropsCollected <= 6) return 'phase1';
+    if (dropsCollected <= 12) return 'phase2';
+    return 'phase3';
+}
+
+// Generate water type based on calculated probabilities
+function getCalculatedWaterType() {
+    // For the very first water generation (game start), only generate clean water
+    // This prevents polluted water rule notification from showing immediately
+    if (dropsCollected === 0 && !gameHasStartedGenerating) {
+        return 'clean';
+    }
+    
+    const currentPhase = getCurrentPhase();
+    const phaseData = WATER_TYPE_PHASES[currentPhase];
+    const probabilities = phaseData.probabilities;
+    
+    // Create weighted array
+    const weightedTypes = [];
+    for (const [type, weight] of Object.entries(probabilities)) {
+        for (let i = 0; i < weight; i++) {
+            weightedTypes.push(type);
+        }
+    }
+    
+    // Select random type from weighted array
+    return weightedTypes[Math.floor(Math.random() * weightedTypes.length)];
+}
+
 // Create a single random water drop at specified position
 function createRandomWaterDrop(position) {
     const catchmentZone = document.querySelector('.water-catchment-zone');
     
-    // Update available water types based on drops collected
-    updateAvailableWaterTypes();
+    // Check if slot is on cooldown
+    if (slotCooldowns[position] > Date.now()) {
+        // Create empty slot with countdown
+        createEmptySlot(position);
+        return;
+    }
     
-    // Use only available water types based on current progression
-    const randomType = availableWaterTypes[Math.floor(Math.random() * availableWaterTypes.length)];
-    
-    // Check if this is a new water type we haven't seen before
-    checkForNewWaterType(randomType);
+    // Use calculated water type progression instead of random
+    const randomType = getCalculatedWaterType();
     
     const drop = document.createElement('div');
     // Visual appearance: fake-clean types look clean, others show their actual type
     let visualClass = randomType;
-    if (randomType.includes('fake-clean')) {
+    if (randomType.includes('suspicious-clean')) {
         visualClass = 'clean';
     }
     drop.className = `water-drop ${visualClass}`;
@@ -593,6 +773,46 @@ function createRandomWaterDrop(position) {
     waterDrops[position] = drop;
 }
 
+// Create empty slot with cooldown timer
+function createEmptySlot(position) {
+    const catchmentZone = document.querySelector('.water-catchment-zone');
+    
+    const emptySlot = document.createElement('div');
+    emptySlot.className = 'water-drop empty-slot';
+    emptySlot.id = `slot-${position}`;
+    emptySlot.dataset.position = position;
+    
+    // Add cooldown display
+    const cooldownDisplay = document.createElement('div');
+    cooldownDisplay.className = 'cooldown-display';
+    cooldownDisplay.textContent = Math.ceil((slotCooldowns[position] - Date.now()) / 1000) + 's';
+    emptySlot.appendChild(cooldownDisplay);
+    
+    // Add to DOM
+    catchmentZone.appendChild(emptySlot);
+    
+    // Update waterDrops array
+    waterDrops[position] = emptySlot;
+    
+    // Start countdown timer
+    if (slotTimers[position]) {
+        clearInterval(slotTimers[position]);
+    }
+    
+    slotTimers[position] = setInterval(() => {
+        const remaining = Math.ceil((slotCooldowns[position] - Date.now()) / 1000);
+        if (remaining <= 0) {
+            clearInterval(slotTimers[position]);
+            slotTimers[position] = null;
+            // Replace empty slot with new water drop
+            emptySlot.remove();
+            createRandomWaterDrop(position);
+        } else {
+            cooldownDisplay.textContent = remaining + 's';
+        }
+    }, 1000);
+}
+
 // Handle selecting a water drop
 function selectWaterDrop(drop) {
     // Prevent selecting a new drop if one is already following the mouse
@@ -606,10 +826,17 @@ function selectWaterDrop(drop) {
         return;
     }
     
+    // Check if weather roll is required before allowing drop selection
+    if (weatherRollRequired) {
+        showInvalidDropFeedback('weather_roll_required');
+        return;
+    }
+    
     const position = parseInt(drop.dataset.position);
     const actualType = drop.dataset.actualType;
     
-    // Timer system - REMOVED
+    // Check if this is a new water type being clicked for the first time
+    checkForNewWaterType(actualType);
     
     selectedDrop = {
         type: actualType,
@@ -622,7 +849,13 @@ function selectWaterDrop(drop) {
     // Remove the drop from catchment zone
     drop.remove();
     
-    // Immediately replace with a new random drop
+    // Set cooldown for this slot based on current phase
+    const currentPhase = getCurrentPhase();
+    const cooldownRange = CATCHMENT_COOLDOWNS[currentPhase];
+    const cooldownTime = Math.random() * (cooldownRange.max - cooldownRange.min) + cooldownRange.min;
+    slotCooldowns[position] = Date.now() + cooldownTime;
+    
+    // Replace with new drop (will show cooldown if needed)
     createRandomWaterDrop(position);
     
     // Create a following drop that will follow the mouse
@@ -634,7 +867,7 @@ function selectWaterDrop(drop) {
 
 // Handle document click to place the selected drop
 function handleDocumentClick(e) {
-    if (!selectedDrop || e.target.classList.contains('water-drop')) return;
+    if (!selectedDrop) return;
     
     // Don't handle drop interactions if game is paused (dialog open)
     if (gamePaused) {
@@ -642,33 +875,133 @@ function handleDocumentClick(e) {
         return;
     }
     
+    // Ignore clicks on UI elements (buttons, dialogs, etc.)
+    if (e.target.closest('button') || 
+        e.target.closest('.dialog') || 
+        e.target.closest('.tool-dialog') ||
+        e.target.closest('.rules-panel') ||
+        e.target.closest('.water-catchment-zone') ||
+        e.target.closest('.dice-container')) {
+        console.log(`🔧 DEBUG: Click on UI element ignored:`, e.target);
+        return;
+    }
+    
+    // Check if clicking on an existing water drop (temporary drops handle their own clicks now)
+    if (e.target.classList.contains('water-drop')) {
+        // Temporary drops have their own click handlers, so this shouldn't be reached for them
+        console.log(`🔧 DEBUG: Click on water drop (not temporary):`, e.target);
+        return;
+    }
+    
     const validDropZone = getValidDropZone(e.clientX, e.clientY);
     
-    if (!validDropZone) {
-        showInvalidDropFeedback('invalid_zone');
-        return;
-    }
-    
-    // Check if this drop type can go to this zone
-    if (!canDropGoToZone(selectedDrop.type, validDropZone)) {
-        showInvalidDropFeedback('wrong_water_type');
-        return;
-    }
-    
-    // Handle the drop based on the zone
-    const dropHandled = handleWaterDrop(validDropZone, e.clientX, e.clientY);
-    
-    // Only reset selection and remove following drop if drop was successfully handled
-    if (dropHandled) {
-        // Remove the following drop
-        if (followingDrop) {
-            followingDrop.remove();
-            followingDrop = null;
+    if (validDropZone) {
+        // Check if this drop type can go to this zone
+        if (!canDropGoToZone(selectedDrop.type, validDropZone)) {
+            showInvalidDropFeedback('wrong_water_type');
+            return;
         }
-        selectedDrop = null;
-        document.body.style.cursor = 'default';
+        
+        // Handle the drop based on the zone
+        const dropHandled = handleWaterDrop(validDropZone, e.clientX, e.clientY);
+        
+        // Only reset selection and remove following drop if drop was successfully handled
+        if (dropHandled) {
+            // Remove the following drop
+            if (followingDrop) {
+                followingDrop.remove();
+                followingDrop = null;
+            }
+            selectedDrop = null;
+            document.body.style.cursor = 'default';
+        }
+        // If drop wasn't handled (tool occupied), keep the drop following the mouse
+    } else {
+        // No valid drop zone found - place the drop temporarily on the game area
+        placeTemporaryDrop(e.clientX, e.clientY);
     }
-    // If drop wasn't handled (tool occupied), keep the drop following the mouse
+}
+
+// Place a temporary drop on the game area that can be picked up later
+function placeTemporaryDrop(x, y) {
+    console.log(`Placing temporary ${selectedDrop.type} drop at (${x}, ${y})`);
+    
+    // Create the temporary drop element
+    const tempDrop = document.createElement('div');
+    tempDrop.className = `water-drop ${selectedDrop.visualType} temporary-drop`;
+    tempDrop.style.position = 'absolute';
+    tempDrop.style.left = (x - 30) + 'px';
+    tempDrop.style.top = (y - 30) + 'px';
+    tempDrop.style.zIndex = '100';
+    tempDrop.style.cursor = 'pointer';
+    tempDrop.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
+    
+    // Store temp drop data for easy access
+    const tempDropData = {
+        type: selectedDrop.type,
+        visualType: selectedDrop.visualType,
+        element: tempDrop,
+        x: x,
+        y: y,
+        timestamp: Date.now()
+    };
+    
+    // Add click handler to pick up the temporary drop
+    tempDrop.addEventListener('click', (e) => {
+        e.stopPropagation();
+        
+        // Don't pick up if already carrying a drop
+        if (followingDrop || selectedDrop) {
+            return;
+        }
+        
+        // Don't pick up if game is paused
+        if (gamePaused) {
+            return;
+        }
+        
+        // Set as selected drop
+        selectedDrop = {
+            type: tempDropData.type,
+            visualType: tempDropData.visualType,
+            element: tempDrop
+        };
+        
+        // Remove from temporary drops array
+        const tempDropIndex = temporaryDrops.findIndex(drop => drop.element === tempDrop);
+        if (tempDropIndex !== -1) {
+            temporaryDrops.splice(tempDropIndex, 1);
+        }
+        
+        // Remove from DOM
+        tempDrop.remove();
+        
+        // Create a following drop that will follow the mouse
+        createFollowingDrop();
+        
+        // Change cursor to indicate a drop is selected
+        document.body.style.cursor = 'none';
+        
+        console.log(`Picked up temporary drop. Remaining: ${temporaryDrops.length}`);
+    });
+    
+    // Add to DOM
+    document.body.appendChild(tempDrop);
+    
+    // Store in temporary drops array
+    temporaryDrops.push(tempDropData);
+    
+    // Remove the following drop
+    if (followingDrop) {
+        followingDrop.remove();
+        followingDrop = null;
+    }
+    
+    // Reset selection
+    selectedDrop = null;
+    document.body.style.cursor = 'default';
+    
+    console.log(`Temporary drop placed. Total temporary drops: ${temporaryDrops.length}`);
 }
 
 // Check if a drop type can go to a specific zone
@@ -780,10 +1113,21 @@ function handleReservoirDrop(waterType, x, y) {
         console.log('Clean water added to reservoir!');
         waterLevel = Math.min(waterLevel + 1, 20); // Increase water level, max 20
         dropsCollected++; // Track total drops collected
+        dropsCollectedSinceLastRoll++; // Track drops since last weather roll
+        
+        // Check if weather roll is required (every 3 drops)
+        if (dropsCollectedSinceLastRoll >= 3) {
+            weatherRollRequired = true;
+            console.log('Weather roll now required! Must roll dice before collecting more drops.');
+            updateDiceButtonState();
+        }
+        
         updateWaterLevel();
         
         // Check for rule progression
         checkRuleProgression();
+        
+        // Time management rule is now triggered when first opening a tool dialog
         
         // Check for win condition
         if (waterLevel >= 20 && !playerHasWon) {
@@ -838,6 +1182,17 @@ function handleToolDrop(waterType, toolType, x, y) {
 // Simplified tool dialog system - drops persist until collected
 function showToolDialog(toolType, waterType = null) {
     console.log(`🔧 DEBUG: showToolDialog called for ${toolType}, waterType: ${waterType}`);
+    
+    // Show time management rule on first tool dialog opening
+    if (!hasSeenTimeManagementRule && waterType) {
+        hasSeenTimeManagementRule = true;
+        const timeRule = RULES.find(r => r.id === 1);
+        if (timeRule) {
+            addRule(timeRule.id);
+            showRuleNotification(timeRule);
+            return; // Don't show tool dialog yet, let user read the rule first
+        }
+    }
     
     hideAllDialogs();
     
@@ -949,7 +1304,7 @@ function startProcessing(toolType) {
     updateToolStatus(toolType, 'In Use');
     
     // Start background processing
-    const processingTime = toolType === 'filter' ? 3000 : 5000; // 3s for filter, 5s for boiling
+            const processingTime = toolType === 'filter' ? 8000 : 12000; // 8s for filter, 12s for boiling (was 3s/5s)
     
     setTimeout(() => {
         if (toolDrops[toolType] && toolDrops[toolType].processing) {
@@ -998,14 +1353,14 @@ function showProcessingStatus(toolType, storedDrop) {
     
     if (toolType === 'filter') {
         if (processStatus) processStatus.textContent = 'Filtering in progress...';
-        if (timeLabel) timeLabel.textContent = 'Processing: 3 seconds';
+        if (timeLabel) timeLabel.textContent = 'Processing: 8 seconds';
         if (collectBtn) {
             collectBtn.textContent = 'Filtering...';
             collectBtn.disabled = true;
         }
     } else if (toolType === 'boiling-pot') {
         if (processStatus) processStatus.textContent = 'Boiling in progress...';
-        if (timeLabel) timeLabel.textContent = 'Processing: 5 seconds';
+        if (timeLabel) timeLabel.textContent = 'Processing: 12 seconds';
         if (collectBtn) {
             collectBtn.textContent = 'Boiling...';
             collectBtn.disabled = true;
@@ -1387,6 +1742,8 @@ function showInvalidDropFeedback(reason = 'invalid_zone') {
         message = 'Tool is occupied! Click on tool to collect existing drop first.';
     } else if (reason === 'wrong_water_type') {
         message = 'This water type cannot go to that tool!';
+    } else if (reason === 'weather_roll_required') {
+        message = 'Weather roll required! Click the dice button to roll weather before collecting more drops.';
     } else {
         message = 'Invalid drop zone! Try dropping on reservoir or appropriate tools.';
     }
@@ -1535,6 +1892,17 @@ function addToolClickHandlers() {
             // Don't open quiz if a drop is being dragged
             if (selectedDrop) return;
             
+            // Show quiz rule on first click
+            if (!hasClickedQuizBefore) {
+                hasClickedQuizBefore = true;
+                const quizRule = RULES.find(r => r.id === 8);
+                if (quizRule) {
+                    addRule(quizRule.id);
+                    showRuleNotification(quizRule);
+                    return; // Don't start quiz immediately, let user read the rule first
+                }
+            }
+            
             // Start the emergency quiz
             startEmergencyQuiz();
         });
@@ -1646,21 +2014,21 @@ const weatherConditions = [
     'Clear Skies, Warm'
 ];
 
-// Weather System
+// Weather System with Aggressive Evaporation Rates
 const WEATHER_TYPES = {
     clear: {
         name: 'Clear',
         emoji: '☀️',
-        evaporationRate: 60000, // 1 drop every 60 seconds
+        evaporationRate: 12000, // 1 drop every 12 seconds (was 15)
         effect: 'normal',
-        description: 'Normal evaporation rate'
+        description: 'Steady evaporation - work with urgency'
     },
     drought: {
         name: 'Drought',
         emoji: '🌵',
-        evaporationRate: 20000, // 1 drop every 20 seconds
+        evaporationRate: 4000, // 1 drop every 4 seconds (was 6)
         effect: 'extreme_evaporation',
-        description: 'Extreme water loss!'
+        description: 'CRITICAL water loss - emergency mode!'
     },
     rainy: {
         name: 'Rainy',
@@ -1670,18 +2038,47 @@ const WEATHER_TYPES = {
         waterGain: 1,
         description: 'No evaporation + bonus water'
     },
-    dustStorm: {
-        name: 'Dust Storm',
-        emoji: '🌪️',
-        evaporationRate: 60000, // Normal evaporation
-        effect: 'contaminate_water',
-        description: 'Contaminates existing water'
+    hot: {
+        name: 'Hot',
+        emoji: '🔥',
+        evaporationRate: 5000, // 1 drop every 5 seconds (was 8)
+        effect: 'high_evaporation',
+        description: 'Intense evaporation - race against time!'
+    },
+    stormy: {
+        name: 'Stormy',
+        emoji: '⛈️',
+        evaporationRate: 7000, // 1 drop every 7 seconds (was 10)
+        effect: 'moderate_evaporation',
+        description: 'Heavy evaporation - work quickly!'
     }
 };
 
 function rollWeather() {
     const diceButton = document.getElementById('diceButton');
     if (!diceButton || diceButton.disabled) return;
+    
+    // Check if it's time to roll the dice
+    if (!weatherRollRequired && !firstDiceRoll) {
+        // Not time to roll - show vibration and notification
+        diceButton.style.animation = 'shake 0.5s ease-in-out';
+        showDiceNotAvailableNotification();
+        setTimeout(() => {
+            diceButton.style.animation = '';
+        }, 500);
+        return;
+    }
+    
+    // Show weather rule dialog on first dice roll
+    if (firstDiceRoll) {
+        firstDiceRoll = false;
+        const weatherRule = RULES.find(r => r.id === 7);
+        if (weatherRule) {
+            addRule(7);
+            showRuleNotification(weatherRule);
+            return; // Don't roll dice yet, let the dialog explain first
+        }
+    }
     
     // Animate dice roll
     diceButton.style.animation = 'spin 0.5s ease-in-out';
@@ -1708,9 +2105,16 @@ function rollWeather() {
         // Start evaporation timer
         startEvaporationTimer(weather);
         
+        // Reset weather roll requirement
+        weatherRollRequired = false;
+        dropsCollectedSinceLastRoll = 0;
+        
         // Re-enable dice button after animation
         diceButton.style.animation = '';
         diceButton.disabled = false;
+        
+        // Update dice button state
+        updateDiceButtonState();
         
         console.log(`🌤️ Weather changed to: ${weather.name}`);
     }, 500);
@@ -1736,18 +2140,8 @@ function applyWeatherEffects(weather) {
             }
             break;
             
-        case 'contaminate_water':
-            // Dust storm - contaminate existing water drops on screen
-            const waterDrops = document.querySelectorAll('.water-drop');
-            waterDrops.forEach(drop => {
-                if (drop.classList.contains('clean')) {
-                    drop.classList.remove('clean');
-                    drop.classList.add('contaminated');
-                    drop.dataset.actualType = 'contaminated';
-                }
-            });
-            console.log('🌪️ Dust storm contaminated existing water drops!');
-            break;
+        // Removed unfair dust storm contamination effect
+        // All weather effects now focus on evaporation rates only
     }
 }
 
@@ -1828,6 +2222,13 @@ function initializeWeatherSystem() {
         weatherStatus.textContent = currentWeather;
         weatherStatus.title = 'Click the dice to change weather';
     }
+    
+    // Start evaporation immediately with default Clear weather
+    const clearWeather = WEATHER_TYPES.clear;
+    if (clearWeather) {
+        startEvaporationTimer(clearWeather);
+        console.log('🌤️ Started evaporation with Clear weather');
+    }
 }
 
 // Water level system
@@ -1853,6 +2254,9 @@ function updateWaterLevel() {
         
         // Check for milestone notifications
         checkMilestoneNotifications();
+        
+        // Update emergency quiz tool status based on water level
+        updateEmergencyQuizStatus();
     }
 }
 
@@ -1904,6 +2308,9 @@ function showMilestoneNotification(milestoneType, config) {
     // Don't show if game is paused or not active
     if (gamePaused || !gameActive) return;
     
+    // Play milestone sound
+    playMilestoneSound();
+    
     // Remove any existing milestone notification
     const existingNotification = document.querySelector('.milestone-notification');
     if (existingNotification) {
@@ -1939,6 +2346,34 @@ function showMilestoneNotification(milestoneType, config) {
     console.log(`Milestone notification shown: ${milestoneType}`);
 }
 
+// Update emergency quiz tool status based on water level
+function updateEmergencyQuizStatus() {
+    const emergencyTool = document.querySelector('.tool-item.emergency');
+    if (emergencyTool) {
+        const statusElement = emergencyTool.querySelector('.tool-status');
+        const descElement = emergencyTool.querySelector('.tool-info p');
+        
+        if (statusElement && descElement) {
+            // Track if player has ever had water above threshold
+            if (waterLevel >= 6) {
+                hasHadWaterAboveThreshold = true;
+            }
+            
+            // Only show "Low Water Alert" if player has had water above threshold AND is now below
+            if (waterLevel < 6 && hasHadWaterAboveThreshold) {
+                statusElement.textContent = 'Low Water Alert';
+                statusElement.className = 'tool-status alert';
+                descElement.textContent = 'Get 3 Bonus Drops';
+            } else {
+                // Default to bonus drops (at start or when above threshold)
+                statusElement.textContent = 'Bonus Drops';
+                statusElement.className = 'tool-status available';
+                descElement.textContent = 'Get 1 Bonus Drop';
+            }
+        }
+    }
+}
+
 // Add CSS for dice roll animation
 const style = document.createElement('style');
 style.textContent = `
@@ -1952,7 +2387,27 @@ document.head.appendChild(style);
 // Progressive Rule System
 const RULES = [
     {
+        id: 0,
+        title: "Welcome to Thirst - The Water Struggle",
+                    description: "Help a family collect 20 clean water drops to survive. Treat unsafe water with tools and manage aggressive evaporation rates.",
+        icon: "🏠",
+        color: "#2E7D32",
+        triggerAt: 0, // Show immediately at game start
+        waterType: 'game-intro',
+        realWorldFact: "Every day, millions of families worldwide face the challenge of finding safe drinking water. This game simulates their daily struggle for survival."
+    },
+    {
         id: 1,
+        title: "Time Management Tips",
+        description: "Tool dialogs don't pause the game - evaporation continues! Drop water anywhere on screen for temporary storage.",
+        icon: "⏰",
+        color: "#FF6B35",
+        triggerAt: 'first-tool-use', // Show when first opening a tool dialog
+        waterType: 'time-management',
+        realWorldFact: "In water-scarce regions, families must carefully manage their time and resources. Every minute spent on water collection is time away from work, school, or other essential activities."
+    },
+    {
+        id: 2,
         title: "Fill reservoir to 20 drops",
         description: "Tap on clean water droplets to collect them. Tap again to drop into reservoir.",
         icon: "💧",
@@ -1963,17 +2418,17 @@ const RULES = [
     },
 
     {
-        id: 2,
+        id: 3,
         title: "Polluted water exists",
         description: "Murky blue droplets are polluted. Use Filter Device to purify before collecting.",
         icon: "🌫️",
         color: "#5A9BD4",
         unlockAt: 3, // Unlock polluted water after collecting 3 drops
         waterType: 'polluted',
-        realWorldFact: "Every day, 1,000 children under age 5 die from diarrhea caused by contaminated water, poor sanitation, and unsafe hygiene practices."
+        realWorldFact: "Every day, 1,000 children under age 5 die from diarrhea caused by unsafe water, poor sanitation, and unsafe hygiene practices."
     },
     {
-        id: 3,
+        id: 4,
         title: "Contaminated water exists",
         description: "Brown droplets with bacteria (🦠) are contaminated. Use Boiling Pot to sterilize before collecting.",
         icon: "🦠",
@@ -1983,7 +2438,7 @@ const RULES = [
         realWorldFact: "Waterborne diseases like cholera, typhoid, and dysentery affect millions annually. Boiling water for 1 minute kills most disease-causing organisms."
     },
     {
-        id: 4,
+        id: 5,
         title: "Suspicious water exists",
         description: "Some clean-looking water is suspicious! Use Microscope to inspect before collecting.",
         icon: "🔬",
@@ -1993,7 +2448,7 @@ const RULES = [
         realWorldFact: "Clear water isn't always safe water. Invisible contaminants like bacteria, viruses, and chemicals can make seemingly clean water deadly."
     },
     {
-        id: 5,
+        id: 6,
         title: "Toxic water exists",
         description: "Dark brown droplets (☢️) need BOTH filtering AND boiling. Filter first, then boil the result.",
         icon: "☢️",
@@ -2001,6 +2456,26 @@ const RULES = [
         unlockAt: 12, // Unlock toxic water after collecting 12 drops
         waterType: 'toxic-water',
         realWorldFact: "In crisis areas, water sources can be contaminated with multiple pollutants including chemicals, sewage, and disease-causing organisms, requiring multiple treatment steps."
+    },
+    {
+        id: 7,
+        title: "Weather affects water quality",
+        description: "Roll weather dice every 3 drops collected! Weather changes water availability and evaporation rates.",
+        icon: "🌦️",
+        color: "#FF9800",
+        triggerAt: 'first-dice-roll', // Show when dice is first used
+        waterType: 'weather-system',
+        realWorldFact: "Climate change and weather patterns dramatically affect water access. Droughts reduce water sources, while floods can contaminate clean water supplies."
+    },
+    {
+        id: 8,
+        title: "Emergency Quiz available",
+        description: "Take the Emergency Quiz to earn bonus water drops! Rewards change based on your water level - more drops when you're in crisis.",
+        icon: "🎓",
+        color: "#9C27B0",
+        triggerAt: 'first-quiz-click', // Show when quiz is first clicked
+        waterType: 'emergency-quiz',
+        realWorldFact: "Education about water safety and conservation is crucial for communities worldwide. Knowledge can literally save lives by teaching proper water treatment and hygiene practices."
     }
 ];
 
@@ -2018,8 +2493,12 @@ function initializeRulesPanel() {
     if (rulesPanel) {
         rulesPanel.innerHTML = '<h3>RULES</h3><div class="rules-list"></div>';
         
-        // Show first rule immediately
-        addRule(1);
+        // Show game introduction first
+        addRule(0);
+        showRuleNotification(RULES.find(r => r.id === 0));
+        
+        // Show basic rule immediately
+        addRule(2);
     }
 }
 
@@ -2055,7 +2534,12 @@ function checkForNewWaterType(waterType) {
             if (rule.id > currentRuleLevel) {
                 currentRuleLevel = rule.id;
             }
-            showRuleNotification(rule);
+            
+            // Show rule notification immediately for any new water type when clicked
+            // But only if it's not clean water (clean water has no rule dialog)
+            if (baseType !== 'clean') {
+                showRuleNotification(rule);
+            }
         } else {
             console.log(`No rule found for water type: ${baseType}`);
         }
@@ -2106,6 +2590,18 @@ function showRuleNotification(rule) {
     // Pause the entire game
     pauseGame();
     
+    // Determine dialog title based on rule type
+    let dialogTitle = "New Water Type Discovered!";
+    if (rule.waterType === 'game-intro') {
+        dialogTitle = "Welcome to the Game!";
+    } else if (rule.waterType === 'weather-system') {
+        dialogTitle = "Weather System Explained!";
+    } else if (rule.waterType === 'emergency-quiz') {
+        dialogTitle = "Emergency Quiz Available!";
+    } else if (rule.waterType === 'time-management') {
+        dialogTitle = "Time Management Tips!";
+    }
+    
     // Create enhanced notification dialog
     const notification = document.createElement('div');
     notification.className = 'rule-notification-dialog';
@@ -2115,7 +2611,7 @@ function showRuleNotification(rule) {
                 <div class="notification-icon-large" style="background-color: ${rule.color}">
                     ${rule.icon}
                 </div>
-                <h2>New Water Type Discovered!</h2>
+                <h2>${dialogTitle}</h2>
             </div>
             
             <div class="notification-dialog-body">
@@ -2140,7 +2636,7 @@ function showRuleNotification(rule) {
             </div>
             
             <div class="notification-dialog-footer">
-                <button class="got-it-button" onclick="dismissRuleNotification()">Got It! Resume Game</button>
+                <button class="got-it-button" onclick="dismissRuleNotification()">${rule.waterType === 'weather-system' ? 'Got It! Roll the Dice' : 'Got It! Resume Game'}</button>
             </div>
         </div>
     `;
@@ -2197,6 +2693,81 @@ function getToolUsageInstructions(waterType) {
                     <span><strong>Step 2:</strong> Then drag the filtered water to <strong>Boiling Pot</strong> to kill bacteria</span>
                 </div>
             `;
+        case 'game-intro':
+            return `
+                <div class="tool-instruction">
+                    <span><strong>🎯 Goal:</strong> Collect 20 clean water drops to fill your family's reservoir</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🚰 How to Play:</strong> Click water drops to select, then click reservoir to collect</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🔧 Treatment:</strong> Use tools to clean unsafe water before collecting</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🌦️ Weather:</strong> Roll dice every 3 drops - weather affects your water supply</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>⚠️ Danger:</strong> Some weather causes evaporation - you can lose water!</span>
+                </div>
+            `;
+        case 'weather-system':
+            return `
+                <div class="tool-instruction">
+                    <span><strong>☀️ Clear:</strong> Steady evaporation - lose 1 drop every 12 seconds</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🌧️ Rainy:</strong> No evaporation + gain 1 bonus drop immediately</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🔥 Hot:</strong> Intense evaporation - lose 1 drop every 5 seconds</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>⛈️ Stormy:</strong> Heavy evaporation - lose 1 drop every 7 seconds</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🌵 Drought:</strong> CRITICAL evaporation - lose 1 drop every 4 seconds!</span>
+                </div>
+            `;
+        case 'time-management':
+            return `
+                <div class="tool-instruction">
+                    <span><strong>⏰ Tool Dialogs:</strong> Microscope, Filter, and Boiling Pot dialogs DON'T pause evaporation</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>💨 Evaporation Risk:</strong> Close tool dialogs quickly (by clicking away) to minimize water loss</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>🎯 Temporary Storage:</strong> Click empty space to drop water anywhere on screen for later pickup</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>📱 Strategy:</strong> Drop water temporarily while tools process, then collect when ready</span>
+                </div>
+            `;
+        case 'emergency-quiz':
+            return `
+                <div class="tool-instruction">
+                    <div class="tool-icon-small">
+                        <img src="assets/icons/quizlogo.png" alt="Quiz">
+                    </div>
+                    <span><strong>🎓 Normal Mode:</strong> Click quiz button to earn 1 bonus drop (when water ≥ 30%)</span>
+                </div>
+                <div class="tool-instruction">
+                    <div class="tool-icon-small">
+                        <img src="assets/icons/quizlogo.png" alt="Quiz">
+                    </div>
+                    <span><strong>⚠️ Emergency Mode:</strong> Earn up to 3 drops when water falls below 30% (6 drops)</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>📚 Questions:</strong> Answer 3 questions about water crisis and charity: water's work</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>⏸️ Timer Pause:</strong> Game timer and evaporation pause during quiz - take your time!</span>
+                </div>
+                <div class="tool-instruction">
+                    <span><strong>💡 Learning:</strong> Each question teaches you about global water challenges</span>
+                </div>
+            `;
         default:
             return `
                 <div class="tool-instruction">
@@ -2209,13 +2780,16 @@ function getToolUsageInstructions(waterType) {
 
 // Helper function to get unique pro tips for each water type
 function getProTips(waterType) {
-    const generalTip = '<li>💡 You can click away from tool dialogs and return later while water processes - save time!</li>';
+    const generalTip = `
+        <li>💡 Tool dialogs DON'T pause the game - evaporation continues! Close dialogs (click away) to save time.</li>
+        <li>🎯 You can drop water anywhere on screen as temporary storage and pick it up later!</li>
+    `;
     
     switch(waterType) {
         case 'polluted':
             return `
                 <ul>
-                    <li>Filter treatment takes 3 seconds to complete</li>
+                    <li>Filter treatment takes 8 seconds to complete</li>
                     <li>Look for murky blue drops to identify polluted water</li>
                     <li>Polluted water is common in urban areas with poor sanitation</li>
                     ${generalTip}
@@ -2224,9 +2798,9 @@ function getProTips(waterType) {
         case 'contaminated':
             return `
                 <ul>
-                    <li>Boiling takes 5 seconds - plan ahead for the timer</li>
+                    <li>Boiling takes 12 seconds - plan ahead for the timer</li>
                     <li>Look for the 🦠 bacteria symbol inside brown drops</li>
-                    <li>Contaminated water often comes from natural sources</li>
+                    <li>Unsafe water often comes from natural sources</li>
                     ${generalTip}
                 </ul>
             `;
@@ -2235,7 +2809,7 @@ function getProTips(waterType) {
                 <ul>
                     <li>Microscope analysis is instant and reveals true water type</li>
                     <li>Always inspect clean-looking water when in doubt</li>
-                    <li>Some contaminated water can appear crystal clear</li>
+                    <li>Some unsafe water can appear crystal clear</li>
                     ${generalTip}
                 </ul>
             `;
@@ -2245,8 +2819,49 @@ function getProTips(waterType) {
                     <li>Requires both tools - filter first, then boil the result</li>
                     <li>Look for the ☢️ radioactive symbol in dark brown drops</li>
                     <li>Most dangerous water type - needs maximum treatment</li>
-                    <li>Plan for 8+ seconds total processing time</li>
+                    <li>Plan for 20+ seconds total processing time</li>
                     ${generalTip}
+                </ul>
+            `;
+        case 'game-intro':
+            return `
+                <ul>
+                    <li><strong>Win Condition:</strong> Fill reservoir to 20/20 drops to complete your mission</li>
+                    <li><strong>Loss Condition:</strong> If evaporation reduces your water to 0, your family faces crisis</li>
+                    <li><strong>Strategy:</strong> Balance speed with safety - treat unsafe water properly</li>
+                    <li><strong>Time Pressure:</strong> Aggressive evaporation rates create constant urgency</li>
+                    <li><strong>Emergency Tool:</strong> Use quiz strategically when water drops below 30%</li>
+                    <li><strong>Scarcity:</strong> Water sources have cooldowns - every drop counts!</li>
+                </ul>
+            `;
+        case 'time-management':
+            return `
+                <ul>
+                    <li><strong>Tool Timing:</strong> Processing continues even when tool dialogs are closed</li>
+                    <li><strong>Multitasking:</strong> Start multiple tools processing, then close dialogs to save time</li>
+                    <li><strong>Emergency Storage:</strong> Drop water on screen when evaporation is too fast</li>
+                    <li><strong>Strategic Placement:</strong> Place water near tools for quick access during processing</li>
+                    <li><strong>Time Awareness:</strong> Only quiz and rule dialogs pause the game - everything else continues</li>
+                </ul>
+            `;
+        case 'emergency-quiz':
+            return `
+                <ul>
+                    <li><strong>Smart Timing:</strong> Use quiz strategically when water is low for maximum reward</li>
+                    <li><strong>Educational Value:</strong> Every question teaches real facts about water crisis</li>
+                    <li><strong>No Penalties:</strong> Wrong answers don't hurt you - still earn drops for participation</li>
+                    <li><strong>Emergency Lifeline:</strong> Quiz becomes most valuable when water drops below 30%</li>
+                    <li><strong>Real Impact:</strong> Learn how charity: water helps communities worldwide</li>
+                </ul>
+            `;
+        case 'weather-system':
+            return `
+                <ul>
+                    <li><strong>Mandatory Rolling:</strong> Must roll dice every 3 drops collected</li>
+                    <li><strong>Strategic Timing:</strong> Roll before collecting your 4th, 7th, 10th drops, etc.</li>
+                    <li><strong>Rain Advantage:</strong> Try to roll when reservoir is low for maximum benefit</li>
+                    <li><strong>Drought Crisis:</strong> Most dangerous weather - only 4 seconds per drop lost!</li>
+                    <li><strong>Emergency Strategy:</strong> Use quiz when harsh weather hits to survive</li>
                 </ul>
             `;
         default:
@@ -2298,23 +2913,165 @@ function resumeGame() {
     if (currentProcessingTool) {
         // Restart the processing timer for the current tool
         const toolData = toolDrops[currentProcessingTool];
-        if (toolData && !toolData.treatmentComplete) {
+        if (toolData && toolData.processing && !toolData.treatmentComplete) {
             // Resume treatment progress
-            startTreatment(currentProcessingTool);
+            startProcessing(currentProcessingTool);
         }
     }
     
     // Resume evaporation timer
     if (gameActive && currentWeather) {
-        startEvaporationTimer(currentWeather);
+        // Get the weather object from WEATHER_TYPES using the currentWeather string
+        const weatherKey = Object.keys(WEATHER_TYPES).find(key => WEATHER_TYPES[key].name === currentWeather);
+        const weatherObject = weatherKey ? WEATHER_TYPES[weatherKey] : WEATHER_TYPES.clear;
+        startEvaporationTimer(weatherObject);
     }
     
     console.log('Game resumed after rule notification');
 }
 
+// Function to update dice button visual state
+function updateDiceButtonState() {
+    const diceButton = document.getElementById('diceButton');
+    if (!diceButton) return;
+    
+    if (weatherRollRequired || firstDiceRoll) {
+        // Dice is available - make it more prominent
+        diceButton.style.background = 'linear-gradient(135deg, #FF6B6B, #FF8E53)';
+        diceButton.style.boxShadow = '0 4px 15px rgba(255, 107, 107, 0.4), 0 0 20px rgba(255, 107, 107, 0.3)';
+        diceButton.style.transform = 'scale(1.05)';
+        diceButton.style.cursor = 'pointer';
+        diceButton.title = weatherRollRequired ? 'Roll required! Click to change weather' : 'Click to roll weather dice';
+    } else {
+        // Dice is not available - make it subdued
+        diceButton.style.background = 'linear-gradient(135deg, #9E9E9E, #757575)';
+        diceButton.style.boxShadow = '0 2px 8px rgba(158, 158, 158, 0.3)';
+        diceButton.style.transform = 'scale(1)';
+        diceButton.style.cursor = 'not-allowed';
+        const dropsNeeded = 3 - dropsCollectedSinceLastRoll;
+        diceButton.title = `Collect ${dropsNeeded} more drop${dropsNeeded > 1 ? 's' : ''} to roll weather`;
+    }
+}
+
+// Function to show notification when dice is not available
+function showDiceNotAvailableNotification() {
+    const dropsNeeded = 3 - dropsCollectedSinceLastRoll;
+    let message = '';
+    
+    if (dropsNeeded > 0) {
+        message = `Collect ${dropsNeeded} more drop${dropsNeeded > 1 ? 's' : ''} before rolling weather dice!`;
+    } else {
+        message = 'Weather dice not available right now!';
+    }
+    
+    // Show brief visual feedback message
+    const feedbackMsg = document.createElement('div');
+    feedbackMsg.textContent = message;
+    feedbackMsg.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        background: rgba(255, 152, 0, 0.9);
+        color: white;
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-weight: bold;
+        font-size: 16px;
+        z-index: 10000;
+        pointer-events: none;
+        animation: diceNotificationFadeInOut 3s ease-in-out;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    `;
+    
+    // Add CSS animation if not already defined
+    if (!document.querySelector('#diceNotificationAnimation')) {
+        const style = document.createElement('style');
+        style.id = 'diceNotificationAnimation';
+        style.textContent = `
+            @keyframes diceNotificationFadeInOut {
+                0% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+                15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); }
+                85% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+                100% { opacity: 0; transform: translate(-50%, -50%) scale(0.8); }
+            }
+        `;
+        document.head.appendChild(style);
+    }
+    
+    document.body.appendChild(feedbackMsg);
+    
+    // Remove message after animation
+    setTimeout(() => {
+        if (feedbackMsg.parentNode) {
+            feedbackMsg.remove();
+        }
+    }, 3000);
+}
+
+// Function to roll weather after dialog is dismissed
+function rollWeatherAfterDialog() {
+    const diceButton = document.getElementById('diceButton');
+    if (!diceButton || diceButton.disabled) return;
+    
+    // Animate dice roll
+    diceButton.style.animation = 'spin 0.5s ease-in-out';
+    diceButton.disabled = true;
+    
+    setTimeout(() => {
+        // Select random weather
+        const weatherKeys = Object.keys(WEATHER_TYPES);
+        const randomWeather = weatherKeys[Math.floor(Math.random() * weatherKeys.length)];
+        const weather = WEATHER_TYPES[randomWeather];
+        
+        // Update current weather
+        currentWeather = weather.name;
+        
+        // Update weather display
+        updateWeatherDisplay(weather);
+        
+        // Apply weather effects
+        applyWeatherEffects(weather);
+        
+        // Create emoji rain effect
+        createWeatherEmojiRain(weather.emoji);
+        
+        // Start evaporation timer
+        startEvaporationTimer(weather);
+        
+        // Reset weather roll requirement
+        weatherRollRequired = false;
+        dropsCollectedSinceLastRoll = 0;
+        
+        // Re-enable dice button after animation
+        diceButton.style.animation = '';
+        diceButton.disabled = false;
+        
+        // Update dice button state
+        updateDiceButtonState();
+        
+        console.log(`🌤️ Weather changed to: ${weather.name}`);
+    }, 500);
+}
+
 // Function to dismiss rule notification
 function dismissRuleNotification() {
     const notification = window.currentRuleNotification;
+    let wasWeatherDialog = false;
+    let wasWelcomeDialog = false;
+    
+    // Check if this was the weather system dialog or welcome dialog
+    if (notification) {
+        const dialogHeader = notification.querySelector('h2');
+        if (dialogHeader) {
+            if (dialogHeader.textContent === 'Weather System Explained!') {
+                wasWeatherDialog = true;
+            } else if (dialogHeader.textContent === 'Welcome to Thirst - The Water Struggle') {
+                wasWelcomeDialog = true;
+            }
+        }
+    }
+    
     if (notification && notification.parentNode) {
         notification.remove();
         window.currentRuleNotification = null;
@@ -2322,6 +3079,19 @@ function dismissRuleNotification() {
     
     // Resume the game
     resumeGame();
+    
+    // If this was the welcome dialog, enable diverse water generation
+    if (wasWelcomeDialog) {
+        gameHasStartedGenerating = true;
+        console.log('🎮 Game now generating diverse water types - rule notifications enabled');
+    }
+    
+    // If this was the weather dialog, automatically roll the dice
+    if (wasWeatherDialog) {
+        setTimeout(() => {
+            rollWeatherAfterDialog();
+        }, 500);
+    }
 }
 
 // Timer System Functions
@@ -2585,6 +3355,9 @@ let selectedAnswer = null;
 
 // Initialize Emergency Quiz
 function startEmergencyQuiz() {
+    // Pause the game first (important for evaporation timer)
+    pauseGame();
+    
     // Reset quiz state
     currentQuestionIndex = 0;
     quizScore = 0;
@@ -2593,11 +3366,38 @@ function startEmergencyQuiz() {
     // Select 3 random questions
     currentQuizQuestions = getRandomQuestions(3);
     
+    // Update alert text and rewards text based on water level
+    const alertText = document.getElementById('quiz-alert-text');
+    const rewardsText = document.getElementById('quiz-rewards-text');
+    
+    if (waterLevel < 6 && hasHadWaterAboveThreshold) {
+        // Low water alert mode
+        if (alertText) {
+            alertText.textContent = 'Your family is running low on water! Answer questions to earn 3 bonus drops.';
+        }
+        if (rewardsText) {
+            rewardsText.textContent = 'Correct answer rewards: 💧 +1 each (max 3)';
+        }
+    } else {
+        // Normal bonus mode
+        if (alertText) {
+            alertText.textContent = 'Test your water knowledge! Answer questions to earn 1 bonus drop.';
+        }
+        if (rewardsText) {
+            rewardsText.textContent = 'Quiz completion reward: 💧 +1';
+        }
+    }
+    
     // Show first question
     displayQuizQuestion();
     
-    // Show quiz dialog
-    showToolDialog('emergency-quiz');
+    // Show quiz dialog (don't call pauseGame again since we already did)
+    hideAllDialogs();
+    const dialog = document.getElementById('emergency-quiz-dialog');
+    if (dialog) {
+        dialog.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
 }
 
 // Get random questions from the question bank
@@ -2736,7 +3536,16 @@ function showQuizFeedback(isCorrect, explanation) {
 
 // Complete quiz and award drops
 function completeQuiz() {
-    const dropsEarned = quizScore; // 1 drop per correct answer
+    let dropsEarned;
+    
+    // Check water level at quiz start to determine reward structure
+    if (waterLevel < 6 && hasHadWaterAboveThreshold) {
+        // Low water alert - full scoring system (1 drop per correct answer, max 3)
+        dropsEarned = quizScore;
+    } else {
+        // Default bonus drops - only 1 bonus drop regardless of score
+        dropsEarned = 1;
+    }
     
     // Award drops to reservoir
     waterLevel = Math.min(20, waterLevel + dropsEarned);
@@ -2749,6 +3558,11 @@ function completeQuiz() {
     // Close quiz after delay
     setTimeout(() => {
         closeDialog('emergency-quiz-dialog');
+        
+        // Ensure game is resumed (closeDialog should handle this, but let's be explicit)
+        if (gamePaused) {
+            resumeGame();
+        }
         
         // Check if player won
         if (waterLevel >= 20) {
@@ -2788,11 +3602,18 @@ function showQuizCompletion(dropsEarned) {
 // Skip quiz
 function skipQuiz() {
     closeDialog('emergency-quiz-dialog');
+    // Ensure game is resumed (closeDialog should handle this, but let's be explicit)
+    if (gamePaused) {
+        resumeGame();
+    }
 }
 
 // Add a function to specifically show the loss screen
 function showLossScreen() {
     console.log('Showing loss screen');
+    
+    // Play loss sound
+    playLossSound();
     
     // Only show if player hasn't won
     if (playerHasWon) {

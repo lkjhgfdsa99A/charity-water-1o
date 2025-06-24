@@ -262,6 +262,32 @@ body {
     box-shadow: 0 6px 20px rgba(255, 68, 68, 0.4);
 }
 
+/* Secret Low Water Button */
+.secret-low-water-button {
+    position: fixed;
+    top: 120px;
+    right: 20px;
+    background: linear-gradient(135deg, #FF9800, #F57C00);
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s ease;
+    z-index: 1000;
+    box-shadow: 0 4px 15px rgba(255, 152, 0, 0.3);
+}
+
+.secret-low-water-button:hover {
+    background: linear-gradient(135deg, #F57C00, #E65100);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(255, 152, 0, 0.4);
+}
+
 /* Charity Water Info Button */
 .charity-info-button {
     position: absolute;
@@ -284,6 +310,7 @@ body {
     z-index: 100;
     text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
     text-align: center;
+    white-space: nowrap;
 }
 
 .charity-info-button:hover {
@@ -299,6 +326,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    line-height: 1;
 }
 
 .charity-info-button .info-text {
@@ -309,6 +337,9 @@ body {
     align-items: center;
     justify-content: center;
     text-align: center;
+    line-height: 1;
+    margin: 0;
+    padding: 0;
 }
 
 /* Game Layout Sections */
@@ -370,12 +401,13 @@ body {
     height: clamp(28px, 4.5vw, 35px);
     font-size: clamp(12px, 2.2vw, 16px);
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: all 0.4s ease;
     display: flex;
     align-items: center;
     justify-content: center;
     box-shadow: 0 2px 4px rgba(74, 144, 226, 0.3);
     color: white;
+    transform: scale(1);
 }
 
 .dice-button:hover {
@@ -879,6 +911,42 @@ body {
     background: rgba(255, 255, 255, 0.7);
     border-radius: 50%;
     transform: rotate(45deg);
+}
+
+/* Empty slot styling for catchment cooldowns */
+.water-drop.empty-slot {
+    background: linear-gradient(135deg, #E8E8E8, #D0D0D0);
+    border: 2px dashed #999;
+    cursor: not-allowed;
+    opacity: 0.7;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.water-drop.empty-slot:hover {
+    transform: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.cooldown-display {
+    font-size: 12px;
+    font-weight: bold;
+    color: #666;
+    text-align: center;
+    line-height: 1;
+}
+
+/* Temporary drop styling - subtle indication it can be picked up */
+.water-drop.temporary-drop {
+    opacity: 0.9;
+    transform: scale(0.95);
+}
+
+.water-drop.temporary-drop:hover {
+    opacity: 1;
+    transform: scale(1.05);
 }
 
 /* Shake animation for invalid drops */
@@ -1909,16 +1977,14 @@ body {
 
 /* Win Screen Styles */
 .win-screen {
-    background-image: url('assets/images/Background_image.jpg');
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
+    background: linear-gradient(135deg, #1B4332, #2D5A47, #40916C, #2D5A47);
+    background-size: 400% 400%;
+    animation: fadeInScreen 1s ease-in-out forwards, gradientShift 8s ease-in-out infinite;
     flex-direction: column;
     justify-content: center;
     align-items: center;
     position: relative;
     opacity: 0;
-    animation: fadeInScreen 1s ease-in-out forwards;
 }
 
 @keyframes fadeInScreen {
@@ -1932,16 +1998,13 @@ body {
     }
 }
 
-.win-screen::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(74, 144, 226, 0.15); /* Light blue overlay */
-    z-index: 1;
+@keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
 }
+
+
 
 .win-content {
     display: flex;
@@ -2258,10 +2321,7 @@ body {
 
 /* Loss Screen */
 .loss-screen {
-    background-image: url('assets/images/Background_image.jpg');
-    background-size: cover;
-    background-position: center;
-    background-repeat: no-repeat;
+    background: linear-gradient(135deg, #8B0000, #DC143C, #B22222);
     flex-direction: column;
     justify-content: center;
     align-items: center;
@@ -2270,17 +2330,7 @@ body {
     animation: fadeInScreen 1s ease-in-out forwards;
 }
 
-.loss-screen::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: url('assets/images/background.jpg') center/cover;
-    opacity: 0.3;
-    z-index: 1;
-}
+
 
 .loss-content {
     display: flex;

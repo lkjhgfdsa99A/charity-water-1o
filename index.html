@@ -82,7 +82,7 @@
                     <div class="tool-info">
                         <h4>Filter Device</h4>
                         <p>Removes Pollution from Water</p>
-                        <span class="tool-status in-use">In Use (2s)</span>
+                        <span class="tool-status in-use">In Use (8s)</span>
                     </div>
                 </div>
                 
@@ -135,6 +135,9 @@
         
         <!-- Secret Drain Button (Hidden) -->
         <button class="secret-drain-button" id="secretDrainButton" onclick="drainReservoir()">🌊 Drain Reservoir</button>
+        
+        <!-- Secret Low Water Button (Hidden) -->
+        <button class="secret-low-water-button" id="secretLowWaterButton" onclick="setLowWater()">⚠️ Set Low Water</button>
     </div>
 
     <!-- Tool Dialogs -->
@@ -251,7 +254,7 @@
                             <div class="progress-bar">
                                 <div class="progress-fill boiling-progress" style="width: 90%;"></div>
                             </div>
-                            <span class="time-label">Time remaining: 2s</span>
+                            <span class="time-label">Time remaining: 12s</span>
                         </div>
                         <div class="result-status">
                             <span class="checkmark">✓</span>
@@ -282,7 +285,7 @@
                     <div class="alert-section">
                         <div class="alert-banner">
                             <span class="alert-icon">⚠</span>
-                            <span>Your family is running low on water! Answer questions to earn 3 bonus drops.</span>
+                            <span id="quiz-alert-text">Your family is running low on water! Answer questions to earn 3 bonus drops.</span>
                         </div>
                     </div>
                     <div class="question-section">
@@ -316,7 +319,7 @@
                             </div>
                         </div>
                         <div class="quiz-footer">
-                            <span class="rewards-text">Correct answer rewards: 💧 +3</span>
+                            <span class="rewards-text" id="quiz-rewards-text">Correct answer rewards: 💧 +3</span>
                         </div>
                     </div>
                 </div>
@@ -463,9 +466,11 @@
     <script src="script.js"></script>
     
     <!-- 
-    AUDIO FILE NEEDED:
-    Please add your win sound file to: assets/sounds/win-sound.mp3
-    The sound system is set up and ready to play when the player wins!
+    AUDIO FILES INTEGRATED:
+    ✓ Win Sound: assets/sounds/8-bit-video-game-win-level-sound-version-1-145827.mp3
+    ✓ Loss Sound: assets/sounds/8-bit-video-game-fail-version-2-145478.mp3
+    ✓ Milestone Sound: assets/sounds/game-bonus-02-294436.mp3
+    All sound effects are now fully functional!
     -->
 </body>
 </html>
